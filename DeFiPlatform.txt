@@ -1,0 +1,163 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.26;
+
+contract DeFiPlatform {
+    address public admin;
+    uint256 public transactionLimit = 3;
+
+    struct User {
+        uint256 id;
+        address userAddress;
+        uint256 liquidityPoolSize;
+        bool verified;
+        uint256 transactionCount;
+        uint256 lastTransactionTime;
+    }
+
+    struct Token {
+        string name;
+        address tokenAddress;
+        uint256 valueInWei;
+    }
+
+    struct Transaction {
+        uint256 id;
+        address user1;
+        address user2;
+        uint256 value;
+        uint256 timestamp;
+    }
+
+    uint256 public userCount;
+    uint256 public transactionCount;
+    mapping(address => User) public users;
+    mapping(uint256 => Transaction) public transactions;
+    mapping(address => Token[]) public userTokens;
+
+    event UserRegistered(uint256 id, address userAddress);
+    event UserVerified(uint256 id, address userAddress, bool verified);
+    event TradeExecuted(uint256 id, address user1, address user2, uint256 value);
+    event LiquidityIncreased(address user, uint256 amount);
+    event LiquidityDecreased(address user, uint256 amount);
+    event TokenCreated(address user, string name, address tokenAddress, uint256 valueInWei);
+
+    modifier onlyAdmin() {
+        require(msg.sender == admin, "Only admin can perform this action");
+        _;
+    }
+
+    modifier onlyVerified(address user) {
+        require(users[user].userAddress != address(0), "User not found");
+        require(users[user].verified, "User is not verified");
+        _;
+    }
+
+    constructor() {
+        admin = msg.sender;
+    }
+
+    function registerUser(address _userAddress) external {
+        require(users[_userAddress].userAddress == address(0), "User already registered");
+
+        userCount++;
+        users[_userAddress] = User(userCount, _userAddress, 0, false, 0, block.timestamp);
+
+        emit UserRegistered(userCount, _userAddress);
+    }
+
+    function verifyUser(address _userAddress) external onlyAdmin {
+        require(users[_userAddress].userAddress != address(0), "User not found");
+
+        if (users[_userAddress].verified) {
+            // If the user is already verified, inform that the user is verified
+            emit UserVerified(users[_userAddress].id, _userAddress, true);
+        } else {
+            // Verify the user
+            users[_userAddress].verified = true;
+            emit UserVerified(users[_userAddress].id, _userAddress, true);
+        }
+    }
+
+    function createTokenAndIncreaseLiquidity(string memory _name, uint256 _value) external onlyVerified(msg.sender) returns (address) {
+        address tokenAddress = address(uint160(uint256(keccak256(abi.encodePacked(block.timestamp, msg.sender, _name)))));
+        uint256 valueInWei = _value * 10 ** 18;
+        userTokens[msg.sender].push(Token(_name, tokenAddress, valueInWei));
+
+        users[msg.sender].liquidityPoolSize += valueInWei;
+
+        emit TokenCreated(msg.sender, _name, tokenAddress, valueInWei);
+        emit LiquidityIncreased(msg.sender, valueInWei);
+
+        return tokenAddress;
+    }
+
+    function decreaseLiquidity(uint256 amount, address _tokenAddress) external onlyVerified(msg.sender) {
+        require(users[msg.sender].liquidityPoolSize >= amount, "Insufficient liquidity pool");
+
+        Token[] storage tokens = userTokens[msg.sender];
+        bool tokenFound = false;
+
+        for (uint256 i = 0; i < tokens.length; i++) {
+            if (tokens[i].tokenAddress == _tokenAddress && tokens[i].valueInWei >= amount) {
+                tokens[i].valueInWei -= amount;
+                users[msg.sender].liquidityPoolSize -= amount;
+                tokenFound = true;
+                break;
+            }
+        }
+
+        require(tokenFound, "Token not found or insufficient token value");
+
+        emit LiquidityDecreased(msg.sender, amount);
+    }
+
+    function executeTrade(address _user2, uint256 _value, address _tokenAddress) external onlyVerified(msg.sender) onlyVerified(_user2) {
+        require(users[_user2].userAddress != address(0), "User2 not found");
+
+        User storage user1 = users[msg.sender];
+        User storage user2 = users[_user2];
+
+        require(user1.transactionCount < transactionLimit, "User1 exceeded transaction limit");
+        require(user2.transactionCount < transactionLimit, "User2 exceeded transaction limit");
+
+        require(block.timestamp - user1.lastTransactionTime <= 1 days, "User1 transaction cooldown period not over");
+        require(block.timestamp - user2.lastTransactionTime <= 1 days, "User2 transaction cooldown period not over");
+
+        uint256 newValueInWei = _value * 10 ** 18;
+        Token[] storage user1Tokens = userTokens[msg.sender];
+        bool tokenFound = false;
+
+        for (uint256 i = 0; i < user1Tokens.length; i++) {
+            if (user1Tokens[i].tokenAddress == _tokenAddress && user1Tokens[i].valueInWei >= newValueInWei) {
+                user1Tokens[i].valueInWei -= newValueInWei;
+                users[msg.sender].liquidityPoolSize -= newValueInWei;
+                users[_user2].liquidityPoolSize += newValueInWei;
+                tokenFound = true;
+                break;
+            }
+        }
+
+        require(tokenFound, "Token not found or insufficient token value");
+
+        transactionCount++;
+        transactions[transactionCount] = Transaction(transactionCount, msg.sender, _user2, newValueInWei, block.timestamp);
+
+        user1.transactionCount++;
+        user2.transactionCount++;
+        user1.lastTransactionTime = block.timestamp;
+        user2.lastTransactionTime = block.timestamp;
+
+        emit TradeExecuted(transactionCount, msg.sender, _user2, newValueInWei);
+    }
+
+
+
+    function getUserTokens(address _userAddress) external view returns (Token[] memory) {
+        return userTokens[_userAddress];
+    }
+
+    function isUserVerified(address _userAddress) external view returns (bool) {
+        require(users[_userAddress].userAddress != address(0), "User not found");
+        return users[_userAddress].verified;
+    }
+}
